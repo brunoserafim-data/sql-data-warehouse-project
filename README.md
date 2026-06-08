@@ -14,8 +14,8 @@ This project involves:
 * 📈 **Business Intelligence**: SQL reporting and dashboard creation for actionable insights.
 
 #### Specifications:
-* 🛠️ **Data Sources:** Import ERP and CRM data from the provided flat files.
-* ✨ **Data Quality:** Cleanse and resolve all quality issues prior to running analysis.
-* 🔄 **Integration:** Merge both sources into a unified, user-friendly analytical data model.
-* 🎯 **Scope:** Focus strictly on the latest dataset (historization is excluded).
-* 📝 **Documentation:** Deliver clear model documentation for both business and analytics stakeholders.
+**Data Sources:** Import ERP and CRM data from the provided flat files.
+**Data Quality:** Cleanse and resolve all quality issues prior to running analysis.
+**Integration:** Merge both sources into a unified, user-friendly analytical data model.
+**Scope:** Focus strictly on the latest dataset (historization is excluded).
+**Documentation:** Deliver clear model documentation for both business and analytics stakeholders.
