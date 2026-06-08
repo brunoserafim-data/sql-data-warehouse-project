@@ -14,7 +14,6 @@ This project involves:
 4. **Analytics & Reporting**: Creating SQL-based reports and dashboards for actionable insights.
 
 #### Specifications:
-### Specifications:
 * 🛠️ **Data Sources:** Import ERP and CRM data from the provided flat files.
 * ✨ **Data Quality:** Cleanse and resolve all quality issues prior to running analysis.
 * 🔄 **Integration:** Merge both sources into a unified, user-friendly analytical data model.
