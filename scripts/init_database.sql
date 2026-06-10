@@ -10,6 +10,11 @@ Author:         Bruno Serafim
 Date Created:   10/06/2026
 Version:        1.0
 
+Dependencies:   None (Runs on Master)
+Usage:          Execute the entire script using SQL Server Management Studio (SSMS) 
+                or sqlcmd. Ensure no active connections exist to 'DataWarehouse' 
+                before running.
+
 WARNING:        Ensure there are backups before running script as all data in the 
                 database will be permanetly deleted. 
 */
@@ -27,6 +32,7 @@ GO
 
 -- Create Database 'DataWarehouse'
 CREATE DATABASE DataWarehouse;
+GO
 USE DataWarehouse;
 GO
 
