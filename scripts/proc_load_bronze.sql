@@ -4,6 +4,7 @@ docker cp "F:\DWH_project\datasets" sqlserver:/var/opt/mssql/
 */
 
 EXEC bronze.load_bronze
+GO
 
 CREATE OR ALTER PROCEDURE bronze.load_bronze AS
 BEGIN
@@ -26,6 +27,7 @@ BEGIN
 		WITH (
 			FIRSTROW = 2,
 			FIELDTERMINATOR = ',',
+			ROWTERMINATOR = '\n',
 			TABLOCK
 		);
 		SET @end_time = GETDATE();
@@ -41,6 +43,7 @@ BEGIN
 		WITH (
 			FIRSTROW = 2,
 			FIELDTERMINATOR = ',',
+			ROWTERMINATOR = '\n',
 			TABLOCK
 		);
 		SET @end_time = GETDATE();
@@ -56,6 +59,7 @@ BEGIN
 		WITH (
 			FIRSTROW = 2,
 			FIELDTERMINATOR = ',',
+			ROWTERMINATOR = '\n',
 			TABLOCK
 		);
 		SET @end_time = GETDATE();
@@ -75,6 +79,7 @@ BEGIN
 		WITH (
 			FIRSTROW = 2,
 			FIELDTERMINATOR = ',',
+			ROWTERMINATOR = '\n',
 			TABLOCK
 		);
 		SET @end_time = GETDATE();
@@ -90,6 +95,7 @@ BEGIN
 		WITH (
 			FIRSTROW = 2,
 			FIELDTERMINATOR = ',',
+			ROWTERMINATOR = '\n',
 			TABLOCK
 		);
 		SET @end_time = GETDATE();
@@ -105,6 +111,7 @@ BEGIN
 		WITH (
 			FIRSTROW = 2,
 			FIELDTERMINATOR = ',',
+			ROWTERMINATOR = '\n',
 			TABLOCK
 		);
 		SET @end_time = GETDATE();
