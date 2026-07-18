@@ -1,9 +1,9 @@
 /*
 ==========================
-Create Databse and Schemas
+Create Database and Schemas
 ==========================
 Script Name:    01_init_data_warehouse.sql
-Description:    Initializes the DataWarehouse database by dropping it if it
+Description:    Initialises the DataWarehouse database by dropping it if it
                 exists, recreating it, and establishing the Medallion 
                 architecture schemas (Bronze, Silver, Gold).
 Author:         Bruno Serafim
@@ -26,6 +26,7 @@ GO
 IF EXISTS (SELECT 1 FROM sys.databases WHERE name = 'DataWarehouse')
 BEGIN
 	ALTER DATABASE DataWarehouse SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
+	USE master;
 	DROP DATABASE DataWarehouse
 END;
 GO
