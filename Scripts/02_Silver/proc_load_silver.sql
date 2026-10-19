@@ -1,7 +1,6 @@
 /*
 ===============================================================================
 Stored Procedure: Load Silver Layer (Bronze -> Silver)
-
 ===============================================================================
 */
 
@@ -10,6 +9,12 @@ GO
 
 CREATE OR ALTER PROCEDURE silver.load_silver AS
 BEGIN
+    -- Declare auditing control variables
+    DECLARE @batch_execution_id UNIQUEIDENTIFIER = NEWID();
+    DECLARE @log_id INT;
+    DECLARE @rows INT;
+
+    -- Declare duration tracking variables
     DECLARE @start_time DATETIME, @end_time DATETIME, @batch_start_time DATETIME, @batch_end_time DATETIME;
 
     BEGIN TRY
@@ -22,10 +27,21 @@ BEGIN
         PRINT 'Loading CRM Tables';
         PRINT '------------------------------';
 
+        -- ====================================================================
+        -- 1. Table Load: silver.crm_cust_info
+        -- ====================================================================
+        EXEC audit.sp_log_start 
+            @batch_execution_id = @batch_execution_id,
+            @layer_name         = 'Silver',
+            @procedure_name     = 'silver.load_silver',
+            @target_table       = 'silver.crm_cust_info',
+            @log_id             = @log_id OUTPUT;
+
         SET @start_time = GETDATE();
         PRINT '>> Truncating Table: silver.crm_cust_info';
         TRUNCATE TABLE silver.crm_cust_info;
         PRINT '>> Inserting Data Into: silver.crm_cust_info';
+
         INSERT INTO silver.crm_cust_info (
             cst_id,
             cst_key,
@@ -47,11 +63,11 @@ BEGIN
                 ELSE UPPER(LEFT(TRIM(cst_lastname), 1)) + LOWER(SUBSTRING(TRIM(cst_lastname), 2, LEN(cst_lastname)))
             END AS cst_lastname,
             CASE WHEN UPPER(TRIM(cst_marital_status)) = 'S' THEN 'Single' 
-                WHEN UPPER(TRIM(cst_marital_status)) = 'M' THEN 'Married' 
-                ELSE 'n/a' END AS cst_marital_status,
+                 WHEN UPPER(TRIM(cst_marital_status)) = 'M' THEN 'Married' 
+                 ELSE 'n/a' END AS cst_marital_status,
             CASE WHEN UPPER(TRIM(cst_gndr)) = 'M' THEN 'Male' 
-                WHEN UPPER(TRIM(cst_gndr)) = 'F' THEN 'Female' 
-                ELSE 'n/a' END AS cst_gndr,
+                 WHEN UPPER(TRIM(cst_gndr)) = 'F' THEN 'Female' 
+                 ELSE 'n/a' END AS cst_gndr,
             cst_create_date
         FROM (
             SELECT *,
@@ -60,8 +76,14 @@ BEGIN
             WHERE cst_id IS NOT NULL
         ) AS s
         WHERE rn = 1;
-        
+
+        SET @rows = @@ROWCOUNT;
         SET @end_time = GETDATE();
+
+        EXEC audit.sp_log_success 
+            @log_id        = @log_id, 
+            @rows_inserted = @rows;
+
         PRINT '>> Load Duration: ' + CAST(DATEDIFF(second, @start_time, @end_time) AS NVARCHAR(10)) + ' seconds';
         PRINT '>> -------------';
 
@@ -75,10 +97,21 @@ BEGIN
         ===============================================================================
         */
 
+        -- ====================================================================
+        -- 2. Table Load: silver.crm_prd_info
+        -- ====================================================================
+        EXEC audit.sp_log_start 
+            @batch_execution_id = @batch_execution_id,
+            @layer_name         = 'Silver',
+            @procedure_name     = 'silver.load_silver',
+            @target_table       = 'silver.crm_prd_info',
+            @log_id             = @log_id OUTPUT;
+
         SET @start_time = GETDATE();
         PRINT '>> Truncating Table: silver.crm_prd_info';
         TRUNCATE TABLE silver.crm_prd_info;
         PRINT '>> Inserting Data Into: silver.crm_prd_info';
+
         INSERT INTO silver.crm_prd_info (
             prd_id,
             cat_id,
@@ -106,14 +139,31 @@ BEGIN
             CAST(DATEADD(day, -1, LEAD(prd_start_dt) OVER (PARTITION BY prd_key ORDER BY prd_start_dt)) AS DATE) AS prd_end_dt
         FROM bronze.crm_prd_info;
 
+        SET @rows = @@ROWCOUNT;
         SET @end_time = GETDATE();
+
+        EXEC audit.sp_log_success 
+            @log_id        = @log_id, 
+            @rows_inserted = @rows;
+
         PRINT '>> Load Duration: ' + CAST(DATEDIFF(second, @start_time, @end_time) AS NVARCHAR(10)) + ' seconds';
         PRINT '>> -------------';
+
+        -- ====================================================================
+        -- 3. Table Load: silver.crm_sales_details
+        -- ====================================================================
+        EXEC audit.sp_log_start 
+            @batch_execution_id = @batch_execution_id,
+            @layer_name         = 'Silver',
+            @procedure_name     = 'silver.load_silver',
+            @target_table       = 'silver.crm_sales_details',
+            @log_id             = @log_id OUTPUT;
 
         SET @start_time = GETDATE();
         PRINT '>> Truncating Table: silver.crm_sales_details';
         TRUNCATE TABLE silver.crm_sales_details;
         PRINT '>> Inserting Data Into: silver.crm_sales_details';
+
         INSERT INTO silver.crm_sales_details (
             sls_ord_num,
             sls_prd_key,
@@ -152,7 +202,13 @@ BEGIN
             END AS sls_price
         FROM bronze.crm_sales_details;
 
+        SET @rows = @@ROWCOUNT;
         SET @end_time = GETDATE();
+
+        EXEC audit.sp_log_success 
+            @log_id        = @log_id, 
+            @rows_inserted = @rows;
+
         PRINT '>> Load Duration: ' + CAST(DATEDIFF(second, @start_time, @end_time) AS NVARCHAR(10)) + ' seconds';
         PRINT '>> -------------';
 
@@ -160,10 +216,21 @@ BEGIN
         PRINT 'Loading ERP Tables';
         PRINT '------------------------------';
 
+        -- ====================================================================
+        -- 4. Table Load: silver.erp_cust_az12
+        -- ====================================================================
+        EXEC audit.sp_log_start 
+            @batch_execution_id = @batch_execution_id,
+            @layer_name         = 'Silver',
+            @procedure_name     = 'silver.load_silver',
+            @target_table       = 'silver.erp_cust_az12',
+            @log_id             = @log_id OUTPUT;
+
         SET @start_time = GETDATE();
         PRINT '>> Truncating Table: silver.erp_cust_az12';
         TRUNCATE TABLE silver.erp_cust_az12;
         PRINT '>> Inserting Data Into: silver.erp_cust_az12';
+
         INSERT INTO silver.erp_cust_az12 (
             cid,
             bdate,
@@ -185,14 +252,31 @@ BEGIN
             END AS gen
         FROM bronze.erp_cust_az12;
 
+        SET @rows = @@ROWCOUNT;
         SET @end_time = GETDATE();
+
+        EXEC audit.sp_log_success 
+            @log_id        = @log_id, 
+            @rows_inserted = @rows;
+
         PRINT '>> Load Duration: ' + CAST(DATEDIFF(second, @start_time, @end_time) AS NVARCHAR(10)) + ' seconds';
         PRINT '>> -------------';
+
+        -- ====================================================================
+        -- 5. Table Load: silver.erp_loc_a101
+        -- ====================================================================
+        EXEC audit.sp_log_start 
+            @batch_execution_id = @batch_execution_id,
+            @layer_name         = 'Silver',
+            @procedure_name     = 'silver.load_silver',
+            @target_table       = 'silver.erp_loc_a101',
+            @log_id             = @log_id OUTPUT;
 
         SET @start_time = GETDATE();
         PRINT '>> Truncating Table: silver.erp_loc_a101';
         TRUNCATE TABLE silver.erp_loc_a101;
         PRINT '>> Inserting Data Into: silver.erp_loc_a101';
+
         INSERT INTO silver.erp_loc_a101 (
             cid, 
             cntry
@@ -200,21 +284,38 @@ BEGIN
         SELECT 
             REPLACE(cid, '-', '') AS cid,
             CASE
-                    WHEN TRIM(UPPER(cntry)) IN ('US', 'USA') THEN 'United States'
-                    WHEN TRIM(UPPER(cntry)) = 'DE' THEN 'Germany'
-                    WHEN TRIM(cntry) = '' OR cntry IS NULL THEN 'n/a'
-                    ELSE TRIM(cntry)
+                WHEN TRIM(UPPER(cntry)) IN ('US', 'USA') THEN 'United States'
+                WHEN TRIM(UPPER(cntry)) = 'DE' THEN 'Germany'
+                WHEN TRIM(cntry) = '' OR cntry IS NULL THEN 'n/a'
+                ELSE TRIM(cntry)
             END AS cntry
         FROM bronze.erp_loc_a101;
 
+        SET @rows = @@ROWCOUNT;
         SET @end_time = GETDATE();
+
+        EXEC audit.sp_log_success 
+            @log_id        = @log_id, 
+            @rows_inserted = @rows;
+
         PRINT '>> Load Duration: ' + CAST(DATEDIFF(second, @start_time, @end_time) AS NVARCHAR(10)) + ' seconds';
         PRINT '>> -------------';
+
+        -- ====================================================================
+        -- 6. Table Load: silver.erp_px_cat_g1v2
+        -- ====================================================================
+        EXEC audit.sp_log_start 
+            @batch_execution_id = @batch_execution_id,
+            @layer_name         = 'Silver',
+            @procedure_name     = 'silver.load_silver',
+            @target_table       = 'silver.erp_px_cat_g1v2',
+            @log_id             = @log_id OUTPUT;
 
         SET @start_time = GETDATE();
         PRINT '>> Truncating Table: silver.erp_px_cat_g1v2';
         TRUNCATE TABLE silver.erp_px_cat_g1v2;
         PRINT '>> Inserting Data Into: silver.erp_px_cat_g1v2';
+
         INSERT INTO silver.erp_px_cat_g1v2 (
             id,
             cat, 
@@ -228,7 +329,13 @@ BEGIN
             maintenance
         FROM bronze.erp_px_cat_g1v2;
 
+        SET @rows = @@ROWCOUNT;
         SET @end_time = GETDATE();
+
+        EXEC audit.sp_log_success 
+            @log_id        = @log_id, 
+            @rows_inserted = @rows;
+
         PRINT '>> Load Duration: ' + CAST(DATEDIFF(second, @start_time, @end_time) AS NVARCHAR(10)) + ' seconds';
         PRINT '>> -------------';
 
@@ -240,10 +347,19 @@ BEGIN
 
     END TRY
     BEGIN CATCH
+        -- 1. Capture error details into local variables first
         DECLARE @ErrorMessage NVARCHAR(4000) = ERROR_MESSAGE();
         DECLARE @ErrorNumber INT = ERROR_NUMBER();
         DECLARE @ErrorState INT = ERROR_STATE();
 
+        -- 2. Pass the local variables into the audit log procedure
+        EXEC audit.sp_log_error
+            @log_id        = @log_id,
+            @error_message = @ErrorMessage,
+            @error_number  = @ErrorNumber,
+            @error_state   = @ErrorState;
+
+        -- 3. Print diagnostics and rethrow
         PRINT '==========================================';
         PRINT 'ERROR OCCURRED DURING LOADING SILVER LAYER';
         PRINT '------------------------------------------';
@@ -251,6 +367,8 @@ BEGIN
         PRINT 'Error Number:  ' + CAST(@ErrorNumber AS NVARCHAR(15));
         PRINT 'Error State:   ' + CAST(@ErrorState AS NVARCHAR(15));
         PRINT '==========================================';
+
+        THROW;
     END CATCH
 END;
 GO

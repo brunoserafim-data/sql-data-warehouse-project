@@ -1,28 +1,28 @@
 /*
-==========================
+==========================================================
 Create Database and Schemas
-==========================
-Script Name:    01_init_data_warehouse.sql
-Description:    Initialises the DataWarehouse database by dropping it if it
-                exists, recreating it, and establishing the Medallion 
-                architecture schemas (Bronze, Silver, Gold).
-Author:         Bruno Serafim
-Date Created:   10/06/2026
-Version:        1.0
+==========================================================
+Script Name:     01_init_data_warehouse.sql
+Description:     Initialises the DataWarehouse database by dropping it if it
+                 exists, recreating it, and establishing the Medallion 
+                 architecture schemas (Bronze, Silver, Gold).
+Author:          Bruno Serafim
+Date Created:    10/06/2026
+Version:         1.1
 
-Dependencies:   None (Runs on Master)
-Usage:          Execute the entire script using SQL Server Management Studio (SSMS) 
-                or sqlcmd. Ensure no active connections exist to 'DataWarehouse' 
-                before running.
+Dependencies:    None (Runs on Master)
+Usage:           Execute the entire script using SQL Server Management Studio (SSMS) 
+                 or sqlcmd. Ensure no active connections exist to 'DataWarehouse' 
+                 before running.
 
-WARNING:        Ensure there are backups before running script as all data in the 
-                database will be permanetly deleted. 
+WARNING:         Ensure there are backups before running script as all data in the 
+                 database will be permanently deleted. 
 */
 
 USE master;
 GO
 
--- Drop and recreate the 'DataWarehouse' database
+-- Drop and recreate the 'DataWarehouse' database safely
 IF EXISTS (SELECT 1 FROM sys.databases WHERE name = 'DataWarehouse')
 BEGIN
     ALTER DATABASE DataWarehouse SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
@@ -37,10 +37,21 @@ GO
 USE DataWarehouse;
 GO
 
--- Create Schemas
-CREATE SCHEMA bronze;
+-- Create Schemas Safely
+IF NOT EXISTS (SELECT * FROM sys.schemas WHERE name = 'bronze')
+BEGIN
+    EXEC('CREATE SCHEMA bronze;');
+END;
 GO
-CREATE SCHEMA silver;
+
+IF NOT EXISTS (SELECT * FROM sys.schemas WHERE name = 'silver')
+BEGIN
+    EXEC('CREATE SCHEMA silver;');
+END;
 GO
-CREATE SCHEMA gold;
+
+IF NOT EXISTS (SELECT * FROM sys.schemas WHERE name = 'gold')
+BEGIN
+    EXEC('CREATE SCHEMA gold;');
+END;
 GO
