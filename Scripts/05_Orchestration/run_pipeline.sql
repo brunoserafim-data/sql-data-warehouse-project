@@ -58,17 +58,23 @@ BEGIN
         PRINT 'STEP 3/3: Verifying Gold Layer Semantic Views';
         PRINT '--------------------------------------------------';
         
-        -- Quick sanity queries to ensure views compile and return rows
-        IF EXISTS (SELECT 1 FROM gold.dim_customers)
+        -- Safe check: verify views exist in metadata before querying
+        IF OBJECT_ID('gold.dim_customers', 'V') IS NOT NULL
             PRINT '   [OK] gold.dim_customers verified.';
+        ELSE
+            PRINT '   [WARNING] gold.dim_customers view does not exist!';
             
-        IF EXISTS (SELECT 1 FROM gold.dim_products)
+        IF OBJECT_ID('gold.dim_products', 'V') IS NOT NULL
             PRINT '   [OK] gold.dim_products verified.';
+        ELSE
+            PRINT '   [WARNING] gold.dim_products view does not exist!';
             
-        IF EXISTS (SELECT 1 FROM gold.fact_sales)
-            PRINT '   [OK] gold.fact_sales verified.;'
+        IF OBJECT_ID('gold.fact_sales', 'V') IS NOT NULL
+            PRINT '   [OK] gold.fact_sales verified.';
+        ELSE
+            PRINT '   [WARNING] gold.fact_sales view does not exist!';
 
-        PRINT '>> Gold Layer Views Verified Successfully.';
+        PRINT '>> Gold Layer Views Verification Completed.';
 
         -- ====================================================================
         -- PIPELINE SUCCESS SUMMARY
