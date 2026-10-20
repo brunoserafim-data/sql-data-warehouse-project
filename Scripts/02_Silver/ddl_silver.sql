@@ -62,12 +62,20 @@ GO
 -- Strategy: Incremental / Watermark Protected Load
 -- Notes: High-volume transactional fact table. Uses `IS NULL` instead of 
 --        `DROP TABLE` to prevent wiping historical delta data during redeployments.
+--        Watermark is the bronze load_id (see audit.etl_watermark); rows are upserted
+--        on the business key (sls_ord_num, sls_prd_key). One-time migration: the legacy
+--        table (no bronze_load_id) is dropped and rebuilt from bronze history.
 -- ============================================================================
+IF OBJECT_ID('silver.crm_sales_details', 'U') IS NOT NULL
+   AND COL_LENGTH('silver.crm_sales_details', 'bronze_load_id') IS NULL
+    DROP TABLE silver.crm_sales_details;
+GO
+
 IF OBJECT_ID('silver.crm_sales_details', 'U') IS NULL
 BEGIN
     CREATE TABLE silver.crm_sales_details (
-        sls_ord_num         NVARCHAR(50),
-        sls_prd_key         NVARCHAR(50),
+        sls_ord_num         NVARCHAR(50) NOT NULL,
+        sls_prd_key         NVARCHAR(50) NOT NULL,
         sls_cust_id         INT,
         sls_order_dt        DATE,
         sls_ship_dt         DATE,
@@ -75,7 +83,10 @@ BEGIN
         sls_sales           INT,
         sls_quantity        INT,
         sls_price           INT,
-        dwh_create_date     DATETIME2 DEFAULT GETDATE()
+        bronze_load_id      BIGINT,                              -- bronze row this version came from
+        dwh_create_date     DATETIME2 DEFAULT GETDATE(),
+        dwh_update_date     DATETIME2 NULL,
+        CONSTRAINT pk_silver_crm_sales_details PRIMARY KEY CLUSTERED (sls_ord_num, sls_prd_key)
     );
 END
 GO

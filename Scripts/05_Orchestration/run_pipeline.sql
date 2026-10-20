@@ -1,12 +1,18 @@
 /*
 ===============================================================================
-Master Orchestration Stored Procedure
+Stored Procedure: Master Orchestration Pipeline
 ===============================================================================
 Script Name:     run_pipeline.sql
 Description:     Orchestrates the end-to-end execution of the Data Warehouse ETL 
                  pipeline by sequentially triggering Bronze and Silver load 
-                 procedures and verifying Gold layer views.
-Author:          Bruno Serafim
+                 procedures, executing automated Data Quality (DQ) checks, 
+                 and verifying Gold layer semantic views.
+
+Parameters:
+    None.
+
+Usage Example:
+    EXEC dbo.run_pipeline;
 ===============================================================================
 */
 
@@ -16,6 +22,8 @@ GO
 CREATE OR ALTER PROCEDURE dbo.run_pipeline
 AS
 BEGIN
+    SET ANSI_NULLS ON;
+    SET QUOTED_IDENTIFIER ON;
     SET NOCOUNT ON;
 
     DECLARE @pipeline_start_time DATETIME2 = GETDATE();
@@ -31,7 +39,7 @@ BEGIN
         -- ====================================================================
         PRINT '';
         PRINT '--------------------------------------------------';
-        PRINT 'STEP 1/3: Executing Bronze Layer Ingestion';
+        PRINT 'STEP 1/4: Executing Bronze Layer Ingestion';
         PRINT '--------------------------------------------------';
         
         EXEC bronze.load_bronze;
@@ -39,11 +47,11 @@ BEGIN
         PRINT '>> Bronze Layer Loaded Successfully.';
 
         -- ====================================================================
-        -- STEP 2: Load Silver Layer (Transformation & Cleaning)
+        -- STEP 2: Load Silver Layer (Transformation & Watermarked Delta Load)
         -- ====================================================================
         PRINT '';
         PRINT '--------------------------------------------------';
-        PRINT 'STEP 2/3: Executing Silver Layer Transformation';
+        PRINT 'STEP 2/4: Executing Silver Layer Transformation';
         PRINT '--------------------------------------------------';
         
         EXEC silver.load_silver;
@@ -51,11 +59,23 @@ BEGIN
         PRINT '>> Silver Layer Transformed Successfully.';
 
         -- ====================================================================
-        -- STEP 3: Verify Gold Layer Views (Analytical Star Schema)
+        -- STEP 3: Execute Automated Data Quality (DQ) Assertions (Fail-Fast)
         -- ====================================================================
         PRINT '';
         PRINT '--------------------------------------------------';
-        PRINT 'STEP 3/3: Verifying Gold Layer Semantic Views';
+        PRINT 'STEP 3/4: Executing Automated Data Quality Asserts';
+        PRINT '--------------------------------------------------';
+        
+        EXEC tests.run_dq_checks;
+        
+        PRINT '>> All Data Quality Checks Passed Successfully.';
+
+        -- ====================================================================
+        -- STEP 4: Verify Gold Layer Views (Analytical Star Schema)
+        -- ====================================================================
+        PRINT '';
+        PRINT '--------------------------------------------------';
+        PRINT 'STEP 4/4: Verifying Gold Layer Semantic Views';
         PRINT '--------------------------------------------------';
         
         -- Safe check: verify views exist in metadata before querying

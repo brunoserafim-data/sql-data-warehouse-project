@@ -6,6 +6,9 @@ Script Purpose:
     This stored procedure loads data into the 'bronze' schema from external CSV files. 
     It performs the following actions:
     - Truncates the bronze tables before loading data.
+      Exception: bronze.crm_sales_details is loaded incrementally. The CSV is bulk loaded
+      into the truncated staging table (bronze.crm_sales_details_stg); only new or changed
+      rows are then appended to the history table, which is never truncated.
     - Uses the `BULK INSERT` command to load data from CSV Files to bronze tables.
 
 Parameters:
@@ -28,6 +31,7 @@ BEGIN
     DECLARE @batch_execution_id UNIQUEIDENTIFIER = NEWID();
     DECLARE @log_id INT;
     DECLARE @rows INT;
+    DECLARE @staged INT;
 
     -- Declare duration tracking variables
     DECLARE @start_time DATETIME, @end_time DATETIME, @batch_start_time DATETIME, @batch_end_time DATETIME;
@@ -112,6 +116,7 @@ BEGIN
 
         -- ====================================================================
         -- 3. Table Load: bronze.crm_sales_details
+        --    Incremental: CSV -> staging (truncate/reload) -> history (append new/changed rows only)
         -- ====================================================================
         EXEC audit.sp_log_start 
             @batch_execution_id = @batch_execution_id,
@@ -121,11 +126,11 @@ BEGIN
             @log_id             = @log_id OUTPUT;
 
         SET @start_time = GETDATE();
-        PRINT '>> Truncating Table: bronze.crm_sales_details';
-        TRUNCATE TABLE bronze.crm_sales_details;
-        PRINT '>> Inserting Data Into: bronze.crm_sales_details';
-        
-        BULK INSERT bronze.crm_sales_details
+        PRINT '>> Truncating Staging Table: bronze.crm_sales_details_stg';
+        TRUNCATE TABLE bronze.crm_sales_details_stg;
+        PRINT '>> Inserting Data Into: bronze.crm_sales_details_stg';
+
+        BULK INSERT bronze.crm_sales_details_stg
         FROM '/var/opt/mssql/datasets/source_crm/sales_details.csv'
         WITH (
             FIRSTROW = 2,
@@ -133,6 +138,45 @@ BEGIN
             ROWTERMINATOR = '0x0a',
             TABLOCK
         );
+        SET @staged = @@ROWCOUNT;
+
+        PRINT '>> Appending new/changed rows to: bronze.crm_sales_details';
+        INSERT INTO bronze.crm_sales_details
+               (sls_ord_num, sls_prd_key, sls_cust_id,
+                sls_order_dt, sls_ship_dt, sls_due_dt,
+                sls_sales, sls_quantity, sls_price,
+                batch_execution_id, row_hash)
+        SELECT s.sls_ord_num,
+               s.sls_prd_key,
+               s.sls_cust_id,
+               s.sls_order_dt,
+               s.sls_ship_dt,
+               s.sls_due_dt,
+               s.sls_sales,
+               s.sls_quantity,
+               s.sls_price,
+               @batch_execution_id,
+               h.row_hash
+          FROM bronze.crm_sales_details_stg AS s
+               CROSS APPLY (
+                   SELECT HASHBYTES('SHA2_256', CONCAT_WS('|',
+                              ISNULL(s.sls_ord_num, '~'),
+                              ISNULL(s.sls_prd_key, '~'),
+                              ISNULL(CAST(s.sls_cust_id  AS NVARCHAR(20)), '~'),
+                              ISNULL(CAST(s.sls_order_dt AS NVARCHAR(20)), '~'),
+                              ISNULL(CAST(s.sls_ship_dt  AS NVARCHAR(20)), '~'),
+                              ISNULL(CAST(s.sls_due_dt   AS NVARCHAR(20)), '~'),
+                              ISNULL(CAST(s.sls_sales    AS NVARCHAR(20)), '~'),
+                              ISNULL(CAST(s.sls_quantity AS NVARCHAR(20)), '~'),
+                              ISNULL(CAST(s.sls_price    AS NVARCHAR(20)), '~')
+                          )) AS row_hash
+               ) AS h
+         WHERE NOT EXISTS
+               (SELECT 1
+                  FROM bronze.crm_sales_details AS b
+                 WHERE b.sls_ord_num = s.sls_ord_num
+                   AND b.sls_prd_key = s.sls_prd_key
+                   AND b.row_hash    = h.row_hash);
 
         SET @rows = @@ROWCOUNT;
         SET @end_time = GETDATE();
@@ -141,6 +185,7 @@ BEGIN
             @log_id        = @log_id, 
             @rows_inserted = @rows;
 
+        PRINT '>> Rows staged: ' + CAST(@staged AS NVARCHAR(20)) + ' | New/changed rows appended: ' + CAST(@rows AS NVARCHAR(20));
         PRINT '>> Load Duration: ' + CAST(DATEDIFF(second, @start_time, @end_time) AS NVARCHAR(10)) + ' seconds';
         PRINT '>> -------------';
 
@@ -229,7 +274,7 @@ BEGIN
         SET @start_time = GETDATE();
         PRINT '>> Truncating Table: bronze.erp_px_cat_g1v2';
         TRUNCATE TABLE bronze.erp_px_cat_g1v2;
-        PRINT '>> Inserting Data InsTo: bronze.erp_px_cat_g1v2';
+        PRINT '>> Inserting Data Into: bronze.erp_px_cat_g1v2';
         
         BULK INSERT bronze.erp_px_cat_g1v2
         FROM '/var/opt/mssql/datasets/source_erp/px_cat_g1v2.csv'
