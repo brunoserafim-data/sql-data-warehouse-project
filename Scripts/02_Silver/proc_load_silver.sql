@@ -2,13 +2,33 @@
 ===============================================================================
 Stored Procedure: Load Silver Layer (Bronze -> Silver)
 ===============================================================================
+Script Name:    proc_load_silver.sql
+Description:    This stored procedure transforms and loads data from the 'bronze' 
+                schema into the 'silver' layer tables. It performs data cleansing, 
+                standardisation, deduplication, and watermarked incremental loads, 
+                integrating with the central audit framework for execution telemetry.
+
+Parameters:
+    @full_refresh BIT = 0  -- 1 = rebuild silver.crm_sales_details from ALL bronze history
+                           --     (resets the watermark window to start from 0).
+
+Usage Example:
+    EXEC silver.load_silver;
+===============================================================================
 */
 
 USE DataWarehouse;
 GO
 
-CREATE OR ALTER PROCEDURE silver.load_silver AS
+CREATE OR ALTER PROCEDURE silver.load_silver
+    @full_refresh BIT = 0    -- 1 = rebuild silver sales from ALL bronze history
+AS
 BEGIN
+    -- Ensure consistent environment settings to prevent query hangs
+    SET ANSI_NULLS ON;
+    SET QUOTED_IDENTIFIER ON;
+    SET NOCOUNT ON;
+
     -- Declare auditing control variables
     DECLARE @batch_execution_id UNIQUEIDENTIFIER = NEWID();
     DECLARE @log_id INT;
@@ -18,7 +38,9 @@ BEGIN
     DECLARE @start_time DATETIME, @end_time DATETIME, @batch_start_time DATETIME, @batch_end_time DATETIME;
 
     -- Declare incremental loading / watermark variables
-    DECLARE @last_order_dt DATE;
+    DECLARE @wm_low  BIGINT;   -- last bronze load_id already processed
+    DECLARE @wm_high BIGINT;   -- highest bronze load_id available for this run
+    DECLARE @updated INT;      -- existing silver rows updated this run
 
     BEGIN TRY
         SET @batch_start_time = GETDATE();
@@ -144,6 +166,9 @@ BEGIN
 
         -- ====================================================================
         -- 3. Table Load: silver.crm_sales_details (INCREMENTAL / WATERMARK LOAD)
+        --    Reads only bronze rows newer than the watermark (bronze.load_id), keeps the
+        --    latest version per business key, upserts into silver and advances the
+        --    watermark in ONE transaction (all-or-nothing).
         -- ====================================================================
         EXEC audit.sp_log_start 
             @batch_execution_id = @batch_execution_id,
@@ -154,71 +179,160 @@ BEGIN
 
         SET @start_time = GETDATE();
 
-        -- Retrieve current watermark (latest loaded order date)
-        SELECT @last_order_dt = MAX(sls_order_dt) FROM silver.crm_sales_details;
-        SET @last_order_dt = ISNULL(@last_order_dt, '1900-01-01');
+        -- Retrieve current watermark (latest processed bronze load_id)
+        SELECT @wm_low = last_load_id
+          FROM audit.etl_watermark
+         WHERE target_table = 'silver.crm_sales_details';
 
-        PRINT '>> Incremental Load Watermark Threshold: ' + CAST(@last_order_dt AS VARCHAR(10));
+        SET @wm_low = ISNULL(@wm_low, 0);
+
+        IF @full_refresh = 1
+           OR NOT EXISTS (SELECT 1 FROM silver.crm_sales_details)
+            SET @wm_low = 0;
+
+        -- Freeze the upper bound up front so rows landing mid-run are picked up next time
+        SELECT @wm_high = ISNULL(MAX(load_id), @wm_low)
+          FROM bronze.crm_sales_details;
+
+        PRINT '>> Incremental Load Watermark Threshold: ' + CAST(@wm_low AS VARCHAR(20)) 
+            + ' < bronze.load_id <= ' + CAST(@wm_high AS VARCHAR(20));
         PRINT '>> Inserting Delta Data Into: silver.crm_sales_details';
 
-        INSERT INTO silver.crm_sales_details (
-            sls_ord_num,
-            sls_prd_key,
-            sls_cust_id,
-            sls_order_dt,
-            sls_ship_dt,
-            sls_due_dt,
-            sls_sales,
-            sls_quantity,
-            sls_price
-        )
-        SELECT
-            sls_ord_num,
-            sls_prd_key,
-            sls_cust_id,
-            sls_order_dt,
-            sls_ship_dt,
-            sls_due_dt,
-            sls_sales,
-            sls_quantity,
-            sls_price
-        FROM (
-            SELECT
-                sls_ord_num,
-                sls_prd_key,
-                sls_cust_id,
-                CASE
-                    WHEN sls_order_dt = 0 OR LEN(CAST(sls_order_dt AS VARCHAR)) != 8 THEN NULL
-                    ELSE CAST(CAST(sls_order_dt AS VARCHAR) AS DATE)
-                END AS sls_order_dt,
-                CASE
-                    WHEN sls_ship_dt = 0 OR LEN(CAST(sls_ship_dt AS VARCHAR)) != 8 THEN NULL
-                    ELSE CAST(CAST(sls_ship_dt AS VARCHAR) AS DATE)
-                END AS sls_ship_dt,
-                CASE
-                    WHEN sls_due_dt = 0 OR LEN(CAST(sls_due_dt AS VARCHAR)) != 8 THEN NULL
-                    ELSE CAST(CAST(sls_due_dt AS VARCHAR) AS DATE)
-                END AS sls_due_dt,
-                CASE
-                    WHEN sls_sales IS NULL OR sls_sales <= 0 OR sls_sales != sls_quantity * ABS(sls_price) THEN sls_quantity * ABS(sls_price)
-                    ELSE sls_sales
-                END AS sls_sales,
-                sls_quantity,
-                CASE
-                    WHEN sls_price IS NULL OR sls_price <= 0 OR sls_sales != sls_quantity * ABS(sls_price) THEN ABS(sls_sales / NULLIF(sls_quantity, 0))
-                    ELSE sls_price
-                END AS sls_price
-            FROM bronze.crm_sales_details
-        ) AS src
-        WHERE src.sls_order_dt > @last_order_dt;
+        BEGIN TRANSACTION;
+
+        IF @full_refresh = 1
+        BEGIN
+            PRINT '>> Full refresh requested: truncating silver.crm_sales_details';
+            DELETE FROM silver.crm_sales_details;   -- DELETE so it can be rolled back with the rest
+        END;
+
+        -- Transform the delta; keep only the LATEST bronze version of each business key
+        SELECT d.sls_ord_num,
+               d.sls_prd_key,
+               d.sls_cust_id,
+               d.sls_order_dt,
+               d.sls_ship_dt,
+               d.sls_due_dt,
+               d.sls_sales,
+               d.sls_quantity,
+               d.sls_price,
+               d.load_id
+          INTO #sales_delta
+          FROM (SELECT b.sls_ord_num,
+                       b.sls_prd_key,
+                       b.sls_cust_id,
+                       CASE
+                           WHEN b.sls_order_dt = 0
+                             OR LEN(CAST(b.sls_order_dt AS VARCHAR)) != 8 THEN NULL
+                           ELSE CAST(CAST(b.sls_order_dt AS VARCHAR) AS DATE)
+                       END AS sls_order_dt,
+                       CASE
+                           WHEN b.sls_ship_dt = 0
+                             OR LEN(CAST(b.sls_ship_dt AS VARCHAR)) != 8 THEN NULL
+                           ELSE CAST(CAST(b.sls_ship_dt AS VARCHAR) AS DATE)
+                       END AS sls_ship_dt,
+                       CASE
+                           WHEN b.sls_due_dt = 0
+                             OR LEN(CAST(b.sls_due_dt AS VARCHAR)) != 8 THEN NULL
+                           ELSE CAST(CAST(b.sls_due_dt AS VARCHAR) AS DATE)
+                       END AS sls_due_dt,
+                       CASE
+                           WHEN b.sls_sales IS NULL
+                             OR b.sls_sales <= 0
+                             OR b.sls_sales != b.sls_quantity * ABS(b.sls_price)
+                                THEN b.sls_quantity * ABS(b.sls_price)
+                           ELSE b.sls_sales
+                       END AS sls_sales,
+                       b.sls_quantity,
+                       CASE
+                           WHEN b.sls_price IS NULL
+                             OR b.sls_price <= 0
+                             OR b.sls_sales != b.sls_quantity * ABS(b.sls_price)
+                                THEN ABS(b.sls_sales / NULLIF(b.sls_quantity, 0))
+                           ELSE b.sls_price
+                       END AS sls_price,
+                       b.load_id,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY b.sls_ord_num, b.sls_prd_key
+                           ORDER BY b.load_id DESC
+                       ) AS rn
+                  FROM bronze.crm_sales_details AS b
+                 WHERE b.load_id >  @wm_low
+                   AND b.load_id <= @wm_high) AS d
+         WHERE d.rn = 1;
+
+        -- 3a. Update keys that already exist in silver (changed source rows)
+        UPDATE t
+           SET t.sls_cust_id     = d.sls_cust_id,
+               t.sls_order_dt    = d.sls_order_dt,
+               t.sls_ship_dt     = d.sls_ship_dt,
+               t.sls_due_dt      = d.sls_due_dt,
+               t.sls_sales       = d.sls_sales,
+               t.sls_quantity    = d.sls_quantity,
+               t.sls_price       = d.sls_price,
+               t.bronze_load_id  = d.load_id,
+               t.dwh_update_date = SYSDATETIME()
+          FROM silver.crm_sales_details AS t
+               INNER JOIN #sales_delta AS d
+               ON t.sls_ord_num = d.sls_ord_num
+              AND t.sls_prd_key = d.sls_prd_key;
+
+        SET @updated = @@ROWCOUNT;
+
+        -- 3b. Insert brand-new keys
+        INSERT INTO silver.crm_sales_details
+               (sls_ord_num, 
+               sls_prd_key, 
+               sls_cust_id,
+                sls_order_dt, 
+                sls_ship_dt, 
+                sls_due_dt,
+                sls_sales, 
+                sls_quantity, 
+                sls_price,
+                bronze_load_id)
+        SELECT d.sls_ord_num,
+               d.sls_prd_key,
+               d.sls_cust_id,
+               d.sls_order_dt,
+               d.sls_ship_dt,
+               d.sls_due_dt,
+               d.sls_sales,
+               d.sls_quantity,
+               d.sls_price,
+               d.load_id
+          FROM #sales_delta AS d
+         WHERE NOT EXISTS
+               (SELECT 1
+                  FROM silver.crm_sales_details AS t
+                 WHERE t.sls_ord_num = d.sls_ord_num
+                   AND t.sls_prd_key = d.sls_prd_key);
 
         SET @rows = @@ROWCOUNT;
+
+        -- 3c. Advance the watermark (same transaction as the data change)
+        UPDATE audit.etl_watermark
+           SET last_load_id  = @wm_high,
+               last_run_ts   = SYSDATETIME(),
+               last_batch_id = @batch_execution_id
+         WHERE target_table = 'silver.crm_sales_details';
+
+        IF @@ROWCOUNT = 0
+            INSERT INTO audit.etl_watermark
+                   (target_table, last_load_id, last_run_ts, last_batch_id)
+            VALUES ('silver.crm_sales_details', @wm_high, SYSDATETIME(), @batch_execution_id);
+
+        COMMIT TRANSACTION;
+
+        DROP TABLE #sales_delta;
+
         SET @end_time = GETDATE();
 
         EXEC audit.sp_log_success 
             @log_id        = @log_id, 
             @rows_inserted = @rows;
 
+        PRINT '>> Inserted: ' + CAST(@rows AS VARCHAR(20)) + ' | Updated: ' + CAST(@updated AS VARCHAR(20));
         PRINT '>> Load Duration: ' + CAST(DATEDIFF(second, @start_time, @end_time) AS NVARCHAR(10)) + ' seconds';
         PRINT '>> -------------';
 
@@ -251,8 +365,9 @@ BEGIN
                 WHEN cid LIKE 'NAS%' THEN SUBSTRING(cid, 4, LEN(cid)) 
                 ELSE cid 
             END AS cid,
+            -- Catch both future dates and impossibly old dates (< 1924-01-01)
             CASE 
-                WHEN bdate > GETDATE() THEN NULL 
+                WHEN bdate < '1924-01-01' OR bdate > GETDATE() THEN NULL 
                 ELSE bdate 
             END AS bdate,
             CASE
@@ -357,6 +472,8 @@ BEGIN
 
     END TRY
     BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;   -- undo partial silver sales load + watermark move
+
         -- 1. Capture error details into local variables first
         DECLARE @ErrorMessage NVARCHAR(4000) = ERROR_MESSAGE();
         DECLARE @ErrorNumber INT = ERROR_NUMBER();

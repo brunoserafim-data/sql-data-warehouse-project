@@ -1,20 +1,23 @@
 /*
 ===============================================================================
-Script Name: Gold Layer Views Creation
-Layer: Gold Layer (Star Schema / Analytical Views)
-Purpose: 
-    This script transforms and models cleaned data from the Silver layer into 
-    a classic Star Schema architecture consisting of two core dimensions 
-    (dim_customers, dim_products) and one transactional fact table (fact_sales) 
-    for business intelligence reporting and analytics.
+DDL Script: Create Gold Layer Views
+===============================================================================
+Script Name:     ddl_gold.sql
+Description:     This script transforms and models cleaned data from the Silver layer 
+                 into a classic Star Schema architecture consisting of two core 
+                 dimensions (dim_customers, dim_products) and one transactional 
+                 fact table (fact_sales) for business intelligence reporting and analytics.
 ===============================================================================
 */
 
+USE DataWarehouse;
+GO
+
 -- ============================================================================
 -- 1. Create Customer Dimension (gold.dim_customers)
--- ============================================================================
--- Purpose: Builds a consolidated, unified customer profile by merging CRM 
---          core customer details with demographic and geographic data from ERP sources.
+-- Strategy: Consolidated Star Schema Dimension
+-- Notes: Builds a unified customer profile by merging CRM core customer 
+--        details with demographic and geographic data from ERP sources.
 -- ============================================================================
 CREATE OR ALTER VIEW gold.dim_customers AS
 SELECT
@@ -26,7 +29,7 @@ SELECT
        el.cntry AS country,
        ci.cst_marital_status AS marital_status,
        CASE 
-            WHEN ci.cst_gndr != ec.gen THEN ci.cst_gndr -- CRM is the Master source for customer Info
+            WHEN ci.cst_gndr != 'n/a' THEN ci.cst_gndr -- CRM is the Master source for customer Info
             ELSE COALESCE(ec.gen, 'n/a')
        END AS gender,
        ec.bdate AS birthdate,
@@ -41,9 +44,9 @@ GO
 
 -- ============================================================================
 -- 2. Create Product Dimension (gold.dim_products)
--- ============================================================================
--- Purpose: Creates an enriched product catalogue view combining product 
---          specifications with category hierarchies, filtering for active items.
+-- Strategy: Consolidated Star Schema Dimension
+-- Notes: Creates an enriched product catalogue view combining product 
+--        specifications with category hierarchies, filtering for active items.
 -- ============================================================================
 CREATE OR ALTER VIEW gold.dim_products AS
 SELECT
@@ -67,9 +70,9 @@ GO
 
 -- ============================================================================
 -- 3. Create Sales Fact Table (gold.fact_sales)
--- ============================================================================
--- Purpose: Acts as the central transactional fact table containing business metrics 
---          (sales amounts, quantities, and prices) tied to customer and product dimensions.
+-- Strategy: Star Schema Transactional Fact Table
+-- Notes: Acts as the central transactional fact table containing business metrics 
+--        (sales amounts, quantities, and prices) tied to customer and product dimensions.
 -- ============================================================================
 CREATE OR ALTER VIEW gold.fact_sales AS
 SELECT
