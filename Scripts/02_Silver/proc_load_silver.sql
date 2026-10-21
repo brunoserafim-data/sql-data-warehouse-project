@@ -11,6 +11,9 @@ Description:    This stored procedure transforms and loads data from the 'bronze
 Parameters:
     @full_refresh BIT = 0  -- 1 = rebuild silver.crm_sales_details from ALL bronze history
                            --     (resets the watermark window to start from 0).
+    @batch_execution_id UNIQUEIDENTIFIER = NULL
+                           -- Optional. Supplied by dbo.run_pipeline so all layers share one
+                           --     batch id. A new id is generated when NULL.
 
 Usage Example:
     EXEC silver.load_silver;
@@ -21,16 +24,18 @@ USE DataWarehouse;
 GO
 
 CREATE OR ALTER PROCEDURE silver.load_silver
-    @full_refresh BIT = 0    -- 1 = rebuild silver sales from ALL bronze history
+    @full_refresh BIT = 0,   -- 1 = rebuild silver sales from ALL bronze history
+    @batch_execution_id UNIQUEIDENTIFIER = NULL
 AS
 BEGIN
     -- Ensure consistent environment settings to prevent query hangs
     SET ANSI_NULLS ON;
     SET QUOTED_IDENTIFIER ON;
     SET NOCOUNT ON;
+    SET XACT_ABORT ON;   -- any run-time error dooms the open transaction, so it can never be left open
 
     -- Declare auditing control variables
-    DECLARE @batch_execution_id UNIQUEIDENTIFIER = NEWID();
+    SET @batch_execution_id = ISNULL(@batch_execution_id, NEWID());
     DECLARE @log_id INT;
     DECLARE @rows INT;
 
@@ -40,7 +45,7 @@ BEGIN
     -- Declare incremental loading / watermark variables
     DECLARE @wm_low  BIGINT;   -- last bronze load_id already processed
     DECLARE @wm_high BIGINT;   -- highest bronze load_id available for this run
-    DECLARE @updated INT;      -- existing silver rows updated this run
+    DECLARE @updated INT = 0;  -- existing silver rows updated this run
 
     BEGIN TRY
         SET @batch_start_time = GETDATE();
@@ -194,6 +199,18 @@ BEGIN
         SELECT @wm_high = ISNULL(MAX(load_id), @wm_low)
           FROM bronze.crm_sales_details;
 
+        -- Guard: if bronze history was reset (identity restarted) while the watermark persisted,
+        -- the old watermark would silently skip every new row. Detect it and rebuild instead.
+        IF @wm_low > 0
+           AND (@wm_high < @wm_low
+                OR (EXISTS (SELECT 1 FROM bronze.crm_sales_details)
+                    AND NOT EXISTS (SELECT 1 FROM bronze.crm_sales_details WHERE load_id = @wm_low)))
+        BEGIN
+            PRINT '>> WARNING: watermark (' + CAST(@wm_low AS VARCHAR(20)) + ') is not found in bronze history; forcing a full refresh.';
+            SET @full_refresh = 1;
+            SET @wm_low = 0;
+        END;
+
         PRINT '>> Incremental Load Watermark Threshold: ' + CAST(@wm_low AS VARCHAR(20)) 
             + ' < bronze.load_id <= ' + CAST(@wm_high AS VARCHAR(20));
         PRINT '>> Inserting Delta Data Into: silver.crm_sales_details';
@@ -223,42 +240,46 @@ BEGIN
                        b.sls_cust_id,
                        CASE
                            WHEN b.sls_order_dt = 0
-                             OR LEN(CAST(b.sls_order_dt AS VARCHAR)) != 8 THEN NULL
-                           ELSE CAST(CAST(b.sls_order_dt AS VARCHAR) AS DATE)
+                             OR LEN(CAST(b.sls_order_dt AS VARCHAR(20))) != 8 THEN NULL
+                           ELSE TRY_CAST(CAST(b.sls_order_dt AS VARCHAR(20)) AS DATE)
                        END AS sls_order_dt,
                        CASE
                            WHEN b.sls_ship_dt = 0
-                             OR LEN(CAST(b.sls_ship_dt AS VARCHAR)) != 8 THEN NULL
-                           ELSE CAST(CAST(b.sls_ship_dt AS VARCHAR) AS DATE)
+                             OR LEN(CAST(b.sls_ship_dt AS VARCHAR(20))) != 8 THEN NULL
+                           ELSE TRY_CAST(CAST(b.sls_ship_dt AS VARCHAR(20)) AS DATE)
                        END AS sls_ship_dt,
                        CASE
                            WHEN b.sls_due_dt = 0
-                             OR LEN(CAST(b.sls_due_dt AS VARCHAR)) != 8 THEN NULL
-                           ELSE CAST(CAST(b.sls_due_dt AS VARCHAR) AS DATE)
+                             OR LEN(CAST(b.sls_due_dt AS VARCHAR(20))) != 8 THEN NULL
+                           ELSE TRY_CAST(CAST(b.sls_due_dt AS VARCHAR(20)) AS DATE)
                        END AS sls_due_dt,
+                       -- Sales is rebuilt from the cleansed price, so sales = quantity * price always holds
                        CASE
                            WHEN b.sls_sales IS NULL
                              OR b.sls_sales <= 0
-                             OR b.sls_sales != b.sls_quantity * ABS(b.sls_price)
-                                THEN b.sls_quantity * ABS(b.sls_price)
+                             OR b.sls_sales != b.sls_quantity * p.sls_price
+                                THEN b.sls_quantity * p.sls_price
                            ELSE b.sls_sales
                        END AS sls_sales,
                        b.sls_quantity,
-                       CASE
-                           WHEN b.sls_price IS NULL
-                             OR b.sls_price <= 0
-                             OR b.sls_sales != b.sls_quantity * ABS(b.sls_price)
-                                THEN ABS(b.sls_sales / NULLIF(b.sls_quantity, 0))
-                           ELSE b.sls_price
-                       END AS sls_price,
+                       p.sls_price,
                        b.load_id,
                        ROW_NUMBER() OVER (
                            PARTITION BY b.sls_ord_num, b.sls_prd_key
                            ORDER BY b.load_id DESC
                        ) AS rn
                   FROM bronze.crm_sales_details AS b
+                       -- Cleansed price: derived from sales when missing or non-positive
+                       CROSS APPLY (SELECT CASE
+                                               WHEN b.sls_price IS NULL
+                                                 OR b.sls_price <= 0
+                                                    THEN ABS(b.sls_sales) / NULLIF(b.sls_quantity, 0)
+                                               ELSE b.sls_price
+                                           END AS sls_price) AS p
                  WHERE b.load_id >  @wm_low
-                   AND b.load_id <= @wm_high) AS d
+                   AND b.load_id <= @wm_high
+                   AND b.sls_ord_num IS NOT NULL      -- business key columns are NOT NULL in silver
+                   AND b.sls_prd_key IS NOT NULL) AS d
          WHERE d.rn = 1;
 
         -- 3a. Update keys that already exist in silver (changed source rows)
@@ -409,10 +430,10 @@ BEGIN
         SELECT 
             REPLACE(cid, '-', '') AS cid,
             CASE
-                WHEN TRIM(UPPER(cntry)) IN ('US', 'USA') THEN 'United States'
-                WHEN TRIM(UPPER(cntry)) = 'DE' THEN 'Germany'
-                WHEN TRIM(cntry) = '' OR cntry IS NULL THEN 'n/a'
-                ELSE TRIM(cntry)
+                WHEN TRIM(CHAR(9) + CHAR(10) + CHAR(13) + ' ' FROM UPPER(cntry)) IN ('US', 'USA') THEN 'United States'
+                WHEN TRIM(CHAR(9) + CHAR(10) + CHAR(13) + ' ' FROM UPPER(cntry)) = 'DE' THEN 'Germany'
+                WHEN TRIM(CHAR(9) + CHAR(10) + CHAR(13) + ' ' FROM cntry) = '' OR cntry IS NULL THEN 'n/a'
+                ELSE TRIM(CHAR(9) + CHAR(10) + CHAR(13) + ' ' FROM cntry)
             END AS cntry
         FROM bronze.erp_loc_a101;
 
@@ -451,7 +472,7 @@ BEGIN
             id,
             cat,
             subcat,
-            maintenance
+            TRIM(CHAR(9) + CHAR(10) + CHAR(13) + ' ' FROM maintenance) AS maintenance   -- last CSV column: strip stray CR from CRLF files
         FROM bronze.erp_px_cat_g1v2;
 
         SET @rows = @@ROWCOUNT;

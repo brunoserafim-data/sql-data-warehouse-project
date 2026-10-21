@@ -15,7 +15,7 @@ GO
 -- ============================================================================
 -- 1. Customer Info Table
 -- Strategy: Full Truncate & Reload
--- Notes: Cleans and standardizes CRM customer profiles. Wipes and reloads 
+-- Notes: Cleans and standardises CRM customer profiles. Wipes and reloads 
 --        completely on every pipeline execution.
 -- ============================================================================
 IF OBJECT_ID('silver.crm_cust_info', 'U') IS NOT NULL
@@ -64,7 +64,8 @@ GO
 --        `DROP TABLE` to prevent wiping historical delta data during redeployments.
 --        Watermark is the bronze load_id (see audit.etl_watermark); rows are upserted
 --        on the business key (sls_ord_num, sls_prd_key). One-time migration: the legacy
---        table (no bronze_load_id) is dropped and rebuilt from bronze history.
+--        table (no bronze_load_id) is dropped; silver.load_silver detects the empty
+--        table and rebuilds it from the full bronze history.
 -- ============================================================================
 IF OBJECT_ID('silver.crm_sales_details', 'U') IS NOT NULL
    AND COL_LENGTH('silver.crm_sales_details', 'bronze_load_id') IS NULL
@@ -94,7 +95,7 @@ GO
 -- ============================================================================
 -- 4. ERP Location Table
 -- Strategy: Full Truncate & Reload
--- Notes: Standardizes geographical and country codes from ERP extracts. 
+-- Notes: Standardises geographical and country codes from ERP extracts. 
 --        Wipes and reloads completely on every pipeline execution.
 -- ============================================================================
 IF OBJECT_ID('silver.erp_loc_a101', 'U') IS NOT NULL

@@ -1,8 +1,8 @@
 /*
 ===============================================================================
-Database Initialization Script
+Database Initialisation Script
 ===============================================================================
-Script Name:     01_init_data_warehouse.sql
+Script Name:     init_database.sql
 Description:     Initialises the DataWarehouse database by dropping it if it
                  exists, recreating it, and establishing the Medallion 
                  architecture schemas (bronze, silver, gold).
@@ -13,7 +13,9 @@ Usage Example:
     before running.
 
 WARNING:         Ensure there are backups before running script as all data in the 
-                 database will be permanently deleted.
+                 database will be permanently deleted. This includes the append-only
+                 bronze.crm_sales_details history and audit.etl_watermark, so the
+                 incremental load state is reset together with the data.
 ===============================================================================
 */
 
@@ -52,4 +54,3 @@ IF NOT EXISTS (SELECT * FROM sys.schemas WHERE name = 'gold')
 BEGIN
     EXEC('CREATE SCHEMA gold;');
 END;
-GO

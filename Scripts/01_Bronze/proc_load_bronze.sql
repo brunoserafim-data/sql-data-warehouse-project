@@ -12,10 +12,16 @@ Script Purpose:
     - Uses the `BULK INSERT` command to load data from CSV Files to bronze tables.
 
 Parameters:
-    None.
+    @batch_execution_id UNIQUEIDENTIFIER = NULL
+        Optional. Supplied by dbo.run_pipeline so Bronze, Silver and the
+        orchestration log share one batch id. A new id is generated when NULL.
 
 Usage Example:
     EXEC bronze.load_bronze;
+
+Notes:
+    - File names are case-sensitive on the Linux SQL Server container and must
+      match the files in /datasets exactly (e.g. CUST_AZ12.csv).
 
 Docker Preparation:
     docker cp "F:\DWH_project\datasets" sqlserver:/var/opt/mssql/
@@ -25,13 +31,19 @@ Docker Preparation:
 USE DataWarehouse;
 GO
 
-CREATE OR ALTER PROCEDURE bronze.load_bronze AS
+CREATE OR ALTER PROCEDURE bronze.load_bronze
+    @batch_execution_id UNIQUEIDENTIFIER = NULL
+AS
 BEGIN
+    SET NOCOUNT ON;
+
     -- Declare auditing control variables
-    DECLARE @batch_execution_id UNIQUEIDENTIFIER = NEWID();
+    SET @batch_execution_id = ISNULL(@batch_execution_id, NEWID());
     DECLARE @log_id INT;
     DECLARE @rows INT;
     DECLARE @staged INT;
+    DECLARE @dup_keys INT;
+    DECLARE @null_keys INT;
 
     -- Declare duration tracking variables
     DECLARE @start_time DATETIME, @end_time DATETIME, @batch_start_time DATETIME, @batch_end_time DATETIME;
@@ -140,43 +152,82 @@ BEGIN
         );
         SET @staged = @@ROWCOUNT;
 
+        -- Data-quality warnings (rows are still handled safely below)
+        SELECT @dup_keys = COUNT(*)
+          FROM (SELECT 1 AS x
+                  FROM bronze.crm_sales_details_stg
+                 WHERE sls_ord_num IS NOT NULL AND sls_prd_key IS NOT NULL
+                 GROUP BY sls_ord_num, sls_prd_key
+                HAVING COUNT(*) > 1) AS d;
+
+        SELECT @null_keys = COUNT(*)
+          FROM bronze.crm_sales_details_stg
+         WHERE sls_ord_num IS NULL OR sls_prd_key IS NULL;
+
+        IF @dup_keys > 0
+            PRINT '>> WARNING: ' + CAST(@dup_keys AS NVARCHAR(20)) + ' business key(s) appear more than once in the extract; one row per key is kept (deterministic by row hash).';
+        IF @null_keys > 0
+            PRINT '>> WARNING: ' + CAST(@null_keys AS NVARCHAR(20)) + ' row(s) with a NULL business key were skipped.';
+
         PRINT '>> Appending new/changed rows to: bronze.crm_sales_details';
+        -- A row is appended when its key is new OR its hash differs from the LATEST stored
+        -- version of that key. Comparing with the latest version (not any version) means a
+        -- value that reverts to an earlier state (A -> B -> A) is still captured.
         INSERT INTO bronze.crm_sales_details
                (sls_ord_num, sls_prd_key, sls_cust_id,
                 sls_order_dt, sls_ship_dt, sls_due_dt,
                 sls_sales, sls_quantity, sls_price,
                 batch_execution_id, row_hash)
-        SELECT s.sls_ord_num,
-               s.sls_prd_key,
-               s.sls_cust_id,
-               s.sls_order_dt,
-               s.sls_ship_dt,
-               s.sls_due_dt,
-               s.sls_sales,
-               s.sls_quantity,
-               s.sls_price,
+        SELECT c.sls_ord_num,
+               c.sls_prd_key,
+               c.sls_cust_id,
+               c.sls_order_dt,
+               c.sls_ship_dt,
+               c.sls_due_dt,
+               c.sls_sales,
+               c.sls_quantity,
+               c.sls_price,
                @batch_execution_id,
-               h.row_hash
-          FROM bronze.crm_sales_details_stg AS s
-               CROSS APPLY (
-                   SELECT HASHBYTES('SHA2_256', CONCAT_WS('|',
-                              ISNULL(s.sls_ord_num, '~'),
-                              ISNULL(s.sls_prd_key, '~'),
-                              ISNULL(CAST(s.sls_cust_id  AS NVARCHAR(20)), '~'),
-                              ISNULL(CAST(s.sls_order_dt AS NVARCHAR(20)), '~'),
-                              ISNULL(CAST(s.sls_ship_dt  AS NVARCHAR(20)), '~'),
-                              ISNULL(CAST(s.sls_due_dt   AS NVARCHAR(20)), '~'),
-                              ISNULL(CAST(s.sls_sales    AS NVARCHAR(20)), '~'),
-                              ISNULL(CAST(s.sls_quantity AS NVARCHAR(20)), '~'),
-                              ISNULL(CAST(s.sls_price    AS NVARCHAR(20)), '~')
-                          )) AS row_hash
-               ) AS h
-         WHERE NOT EXISTS
-               (SELECT 1
-                  FROM bronze.crm_sales_details AS b
-                 WHERE b.sls_ord_num = s.sls_ord_num
-                   AND b.sls_prd_key = s.sls_prd_key
-                   AND b.row_hash    = h.row_hash);
+               c.row_hash
+          FROM (SELECT s.sls_ord_num,
+                       s.sls_prd_key,
+                       s.sls_cust_id,
+                       s.sls_order_dt,
+                       s.sls_ship_dt,
+                       s.sls_due_dt,
+                       s.sls_sales,
+                       s.sls_quantity,
+                       s.sls_price,
+                       h.row_hash,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY s.sls_ord_num, s.sls_prd_key
+                           ORDER BY h.row_hash
+                       ) AS rn
+                  FROM bronze.crm_sales_details_stg AS s
+                       CROSS APPLY (
+                           SELECT HASHBYTES('SHA2_256', CONCAT_WS('|',
+                                      ISNULL(s.sls_ord_num, '~'),
+                                      ISNULL(s.sls_prd_key, '~'),
+                                      ISNULL(CAST(s.sls_cust_id  AS NVARCHAR(20)), '~'),
+                                      ISNULL(CAST(s.sls_order_dt AS NVARCHAR(20)), '~'),
+                                      ISNULL(CAST(s.sls_ship_dt  AS NVARCHAR(20)), '~'),
+                                      ISNULL(CAST(s.sls_due_dt   AS NVARCHAR(20)), '~'),
+                                      ISNULL(CAST(s.sls_sales    AS NVARCHAR(20)), '~'),
+                                      ISNULL(CAST(s.sls_quantity AS NVARCHAR(20)), '~'),
+                                      ISNULL(CAST(s.sls_price    AS NVARCHAR(20)), '~')
+                                  )) AS row_hash
+                       ) AS h
+                 WHERE s.sls_ord_num IS NOT NULL
+                   AND s.sls_prd_key IS NOT NULL) AS c
+               OUTER APPLY (
+                   SELECT TOP (1) b.row_hash
+                     FROM bronze.crm_sales_details AS b
+                    WHERE b.sls_ord_num = c.sls_ord_num
+                      AND b.sls_prd_key = c.sls_prd_key
+                    ORDER BY b.load_id DESC
+               ) AS l
+         WHERE c.rn = 1
+           AND (l.row_hash IS NULL OR l.row_hash <> c.row_hash);
 
         SET @rows = @@ROWCOUNT;
         SET @end_time = GETDATE();
@@ -209,7 +260,7 @@ BEGIN
         PRINT '>> Inserting Data Into: bronze.erp_loc_a101';
         
         BULK INSERT bronze.erp_loc_a101
-        FROM '/var/opt/mssql/datasets/source_erp/loc_a101.csv'
+        FROM '/var/opt/mssql/datasets/source_erp/LOC_A101.csv'
         WITH (
             FIRSTROW = 2,
             FIELDTERMINATOR = ',',
@@ -243,7 +294,7 @@ BEGIN
         PRINT '>> Inserting Data Into: bronze.erp_cust_az12';
         
         BULK INSERT bronze.erp_cust_az12
-        FROM '/var/opt/mssql/datasets/source_erp/cust_az12.csv'
+        FROM '/var/opt/mssql/datasets/source_erp/CUST_AZ12.csv'
         WITH (
             FIRSTROW = 2,
             FIELDTERMINATOR = ',',
@@ -277,7 +328,7 @@ BEGIN
         PRINT '>> Inserting Data Into: bronze.erp_px_cat_g1v2';
         
         BULK INSERT bronze.erp_px_cat_g1v2
-        FROM '/var/opt/mssql/datasets/source_erp/px_cat_g1v2.csv'
+        FROM '/var/opt/mssql/datasets/source_erp/PX_CAT_G1V2.csv'
         WITH (
             FIRSTROW = 2,
             FIELDTERMINATOR = ',',
@@ -328,5 +379,6 @@ BEGIN
 END;
 GO
 
-EXEC bronze.load_bronze;
-GO
+-- Deployment only creates the procedure. Run the load explicitly (or via dbo.run_pipeline):
+-- EXEC bronze.load_bronze;
+-- GO

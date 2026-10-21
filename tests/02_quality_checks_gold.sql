@@ -17,6 +17,9 @@ Usage:
 ===============================================================================
 */
 
+USE DataWarehouse;
+GO
+
 -- ====================================================================
 -- 1. Testing 'gold.dim_customers'
 -- ====================================================================
@@ -69,13 +72,14 @@ HAVING COUNT(*) > 1 OR product_id IS NULL;
 
 -- Check 3.1: Check Data Model Connectivity / Referential Integrity (Products)
 -- Expectation: No Results (Every sales record must resolve to a valid product dimension key)
+-- Note: fact_sales is built with LEFT JOINs, so an unmatched sale shows up as a NULL key.
 SELECT
     f.order_number,
     f.product_key
 FROM gold.fact_sales AS f
 LEFT JOIN gold.dim_products AS p
     ON f.product_key = p.product_key
-WHERE f.product_key IS NOT NULL AND p.product_key IS NULL;
+WHERE f.product_key IS NULL OR p.product_key IS NULL;
 
 -- Check 3.2: Check Data Model Connectivity / Referential Integrity (Customers)
 -- Expectation: No Results (Every sales record must resolve to a valid customer dimension key)
@@ -85,7 +89,14 @@ SELECT
 FROM gold.fact_sales AS f
 LEFT JOIN gold.dim_customers AS c
     ON f.customer_key = c.customer_key
-WHERE f.customer_key IS NOT NULL AND c.customer_key IS NULL;
+WHERE f.customer_key IS NULL OR c.customer_key IS NULL;
+
+-- Check 3.2b: Fact grain - the dimension joins must neither drop nor duplicate sales rows
+-- Expectation: No Results
+SELECT
+    (SELECT COUNT(*) FROM gold.fact_sales)              AS fact_rows,
+    (SELECT COUNT(*) FROM silver.crm_sales_details) AS silver_rows
+WHERE (SELECT COUNT(*) FROM gold.fact_sales) <> (SELECT COUNT(*) FROM silver.crm_sales_details);
 
 -- Check 3.3: Verify financial and quantity metric integrity in sales facts
 -- Expectation: No Results (No negative sales, or negative/zero quantities and prices)

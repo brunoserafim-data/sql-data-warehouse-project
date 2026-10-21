@@ -18,6 +18,9 @@ Usage:
 ===============================================================================
 */
 
+USE DataWarehouse;
+GO
+
 -- ====================================================================
 -- 1. Testing 'silver.crm_cust_info'
 -- ====================================================================
@@ -99,16 +102,29 @@ WHERE prd_end_dt < prd_start_dt;
 -- 3. Testing 'silver.crm_sales_details'
 -- ====================================================================
 
--- Check 3.1: Check for invalid dates in the raw source that failed parsing
--- Note: Queries bronze layer to isolate dates that were caught and converted to NULL in silver
--- Expectation: No invalid dates out of range
+-- Check 3.1: Verify no out-of-range dates survive in silver (invalid dates must have become NULL)
+-- Expectation: No Results
 SELECT
-    NULLIF(sls_due_dt, 0) AS sls_due_dt
+    sls_ord_num,
+    sls_order_dt,
+    sls_ship_dt,
+    sls_due_dt
+FROM silver.crm_sales_details
+WHERE sls_order_dt NOT BETWEEN '1900-01-01' AND '2050-01-01'
+   OR sls_ship_dt  NOT BETWEEN '1900-01-01' AND '2050-01-01'
+   OR sls_due_dt   NOT BETWEEN '1900-01-01' AND '2050-01-01';
+
+-- Check 3.1b (INFORMATIONAL): Raw bronze dates that failed parsing and were converted to NULL in silver
+-- Expectation: Rows ARE expected here (the source contains invalid order dates); review, do not fail.
+SELECT
+    sls_ord_num,
+    NULLIF(sls_order_dt, 0) AS sls_order_dt,
+    NULLIF(sls_ship_dt, 0)  AS sls_ship_dt,
+    NULLIF(sls_due_dt, 0)   AS sls_due_dt
 FROM bronze.crm_sales_details
-WHERE sls_due_dt <= 0
-    OR LEN(CAST(sls_due_dt AS VARCHAR)) != 8
-    OR sls_due_dt > 20500101
-    OR sls_due_dt < 19000101;
+WHERE sls_order_dt <= 0 OR LEN(CAST(sls_order_dt AS VARCHAR(20))) != 8 OR sls_order_dt > 20500101 OR sls_order_dt < 19000101
+   OR sls_ship_dt  <= 0 OR LEN(CAST(sls_ship_dt  AS VARCHAR(20))) != 8 OR sls_ship_dt  > 20500101 OR sls_ship_dt  < 19000101
+   OR sls_due_dt   <= 0 OR LEN(CAST(sls_due_dt   AS VARCHAR(20))) != 8 OR sls_due_dt   > 20500101 OR sls_due_dt   < 19000101;
 
 -- Check 3.2: Verify chronological consistency of transactional dates (Order Date vs Ship/Due Dates)
 -- Expectation: No Results
@@ -133,6 +149,35 @@ WHERE sls_sales != sls_quantity * sls_price
    OR sls_quantity <= 0
    OR sls_price <= 0
 ORDER BY sls_sales, sls_quantity, sls_price;
+
+-- Check 3.4: Watermark must not be ahead of bronze, and silver must not hold rows newer than the watermark
+-- Expectation: No Results
+SELECT
+    w.target_table,
+    w.last_load_id,
+    (SELECT MAX(load_id) FROM bronze.crm_sales_details) AS max_bronze_load_id,
+    (SELECT MAX(bronze_load_id) FROM silver.crm_sales_details) AS max_silver_bronze_load_id
+FROM audit.etl_watermark AS w
+WHERE w.target_table = 'silver.crm_sales_details'
+  AND (w.last_load_id > ISNULL((SELECT MAX(load_id) FROM bronze.crm_sales_details), 0)
+    OR ISNULL((SELECT MAX(bronze_load_id) FROM silver.crm_sales_details), 0) > w.last_load_id);
+
+-- Check 3.5: Every bronze business key must exist in silver on its LATEST bronze version
+-- Expectation: No Results
+SELECT
+    l.sls_ord_num,
+    l.sls_prd_key,
+    l.max_load_id AS latest_bronze_load_id,
+    s.bronze_load_id AS silver_bronze_load_id
+FROM (SELECT sls_ord_num, sls_prd_key, MAX(load_id) AS max_load_id
+        FROM bronze.crm_sales_details
+       WHERE sls_ord_num IS NOT NULL AND sls_prd_key IS NOT NULL
+       GROUP BY sls_ord_num, sls_prd_key) AS l
+LEFT JOIN silver.crm_sales_details AS s
+       ON s.sls_ord_num = l.sls_ord_num
+      AND s.sls_prd_key = l.sls_prd_key
+WHERE s.sls_ord_num IS NULL
+   OR s.bronze_load_id <> l.max_load_id;
 
 
 -- ====================================================================
@@ -185,11 +230,11 @@ ORDER BY cntry;
 -- 6. Testing 'silver.erp_px_cat_g1v2'
 -- ====================================================================
 
--- Check 6.1: Check for any leftover whitespace in product category hierarchies
+-- Check 6.1: Check for any leftover whitespace (including stray carriage returns) in product category hierarchies
 -- Expectation: No Results
 SELECT
     *
 FROM silver.erp_px_cat_g1v2
-WHERE cat != TRIM(cat)
-   OR subcat != TRIM(subcat)
-   OR maintenance != TRIM(maintenance);
+WHERE cat != TRIM(CHAR(9) + CHAR(10) + CHAR(13) + ' ' FROM cat)
+   OR subcat != TRIM(CHAR(9) + CHAR(10) + CHAR(13) + ' ' FROM subcat)
+   OR maintenance != TRIM(CHAR(9) + CHAR(10) + CHAR(13) + ' ' FROM maintenance);

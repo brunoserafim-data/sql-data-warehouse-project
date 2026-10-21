@@ -1,0 +1,3 @@
+# Keep source files on LF so BULK INSERT (ROWTERMINATOR = '0x0a') never sees stray carriage returns
+*.csv text eol=lf
+*.sql text

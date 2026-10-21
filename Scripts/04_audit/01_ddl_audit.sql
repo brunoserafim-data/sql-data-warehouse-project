@@ -11,6 +11,8 @@ Purpose:
 
 Usage:
     - Run this script once to set up the audit framework infrastructure.
+    - Safe to re-run: audit.pipeline_log is never dropped, so execution history
+      (and the batch ids referenced by audit.etl_watermark) survives redeploys.
     - Integrate the logging calls within your ETL stored procedures.
 ===============================================================================
 */
@@ -30,25 +32,24 @@ GO
 -- ============================================================================
 -- 2. Create Central Audit Log Table
 -- ============================================================================
-IF OBJECT_ID('audit.pipeline_log', 'U') IS NOT NULL
-    DROP TABLE audit.pipeline_log;
-GO
-
-CREATE TABLE audit.pipeline_log (
-    log_id            INT IDENTITY(1,1) PRIMARY KEY,
-    batch_execution_id UNIQUEIDENTIFIER NOT NULL,
-    layer_name        NVARCHAR(50)      NOT NULL, -- e.g., 'Bronze', 'Silver', 'Gold'
-    procedure_name    NVARCHAR(128)     NOT NULL, -- e.g., 'silver.load_silver'
-    target_table      NVARCHAR(128)     NULL,     -- e.g., 'silver.crm_cust_info'
-    status            NVARCHAR(20)      NOT NULL, -- 'RUNNING', 'SUCCESS', 'FAILED'
-    rows_inserted     INT               NULL,     -- Row count affected/inserted
-    start_time        DATETIME2         NOT NULL,
-    end_time          DATETIME2         NULL,
-    duration_seconds  INT               NULL,     -- Execution time in seconds
-    error_message     NVARCHAR(4000)    NULL,     -- Captured error message
-    error_number      INT               NULL,     -- SQL error number
-    error_state       INT               NULL      -- SQL error state
-);
+IF OBJECT_ID('audit.pipeline_log', 'U') IS NULL
+BEGIN
+    CREATE TABLE audit.pipeline_log (
+        log_id            INT IDENTITY(1,1) PRIMARY KEY,
+        batch_execution_id UNIQUEIDENTIFIER NOT NULL,
+        layer_name        NVARCHAR(50)      NOT NULL, -- e.g., 'Bronze', 'Silver', 'Orchestration'
+        procedure_name    NVARCHAR(128)     NOT NULL, -- e.g., 'silver.load_silver'
+        target_table      NVARCHAR(128)     NULL,     -- e.g., 'silver.crm_cust_info'
+        status            NVARCHAR(20)      NOT NULL, -- 'RUNNING', 'SUCCESS', 'FAILED'
+        rows_inserted     INT               NULL,     -- Row count affected/inserted
+        start_time        DATETIME2         NOT NULL,
+        end_time          DATETIME2         NULL,
+        duration_seconds  INT               NULL,     -- Execution time in seconds
+        error_message     NVARCHAR(4000)    NULL,     -- Captured error message
+        error_number      INT               NULL,     -- SQL error number
+        error_state       INT               NULL      -- SQL error state
+    );
+END;
 GO
 
 -- ============================================================================

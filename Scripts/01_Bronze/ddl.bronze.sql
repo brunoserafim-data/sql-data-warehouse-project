@@ -1,6 +1,6 @@
 /*
 ================================================================================
-DDL Script: Bronze Schema Initialization
+DDL Script: Bronze Schema Initialisation
 ================================================================================
 Script Purpose:
     Drops and recreates all user tables within the 'bronze' staging layer.

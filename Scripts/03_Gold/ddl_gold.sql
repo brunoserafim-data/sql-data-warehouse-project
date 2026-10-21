@@ -19,6 +19,11 @@ GO
 -- Notes: Builds a unified customer profile by merging CRM core customer 
 --        details with demographic and geographic data from ERP sources.
 -- ============================================================================
+
+IF OBJECT_ID('gold.dim_customers', 'V') IS NOT NULL
+    DROP VIEW gold.dim_customers;
+GO
+
 CREATE OR ALTER VIEW gold.dim_customers AS
 SELECT
        ROW_NUMBER() OVER (ORDER BY ci.cst_id) AS customer_key, -- Surrogate key
@@ -48,6 +53,10 @@ GO
 -- Notes: Creates an enriched product catalogue view combining product 
 --        specifications with category hierarchies, filtering for active items.
 -- ============================================================================
+IF OBJECT_ID('gold.dim_products', 'V') IS NOT NULL
+    DROP VIEW gold.dim_products;
+GO
+
 CREATE OR ALTER VIEW gold.dim_products AS
 SELECT
        ROW_NUMBER() OVER (ORDER BY pn.prd_start_dt, pn.prd_id) AS product_key, -- Surrogate key
@@ -74,6 +83,10 @@ GO
 -- Notes: Acts as the central transactional fact table containing business metrics 
 --        (sales amounts, quantities, and prices) tied to customer and product dimensions.
 -- ============================================================================
+If OBJECT_ID('gold.fact_sales', 'V') IS NOT NULL
+       DROP VIEW gold.fact_sales;
+GO
+
 CREATE OR ALTER VIEW gold.fact_sales AS
 SELECT
     sd.sls_ord_num AS order_number,
