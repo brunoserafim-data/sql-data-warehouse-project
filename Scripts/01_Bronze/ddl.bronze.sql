@@ -12,6 +12,9 @@ Script Purpose:
 ================================================================================
 */
 
+USE DataWarehouse;
+GO
+
 -- 1. Customer Info Table
 IF OBJECT_ID('bronze.crm_cust_info', 'U') IS NOT NULL
     DROP TABLE bronze.crm_cust_info;
