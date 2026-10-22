@@ -7,15 +7,16 @@ Description:     Initialises the DataWarehouse database by dropping it if it
                  exists, recreating it, and establishing the Medallion 
                  architecture schemas (bronze, silver, gold).
 
-Usage Example:
-    Execute the entire script using SQL Server Management Studio (SSMS) 
-    or sqlcmd. Ensure no active connections exist to 'DataWarehouse' 
-    before running.
+Purpose:         FIRST-TIME SETUP OR DELIBERATE FULL RESET ONLY.
+                 Drops and recreates the DataWarehouse database.
 
-WARNING:         Ensure there are backups before running script as all data in the 
-                 database will be permanently deleted. This includes the append-only
-                 bronze.crm_sales_details history and audit.etl_watermark, so the
-                 incremental load state is reset together with the data.
+WARNING:         This permanently deletes ALL data, including the append-only
+                 bronze.crm_sales_details history, audit.pipeline_log and
+                 audit.etl_watermark. The incremental load state is reset
+                 together with the data.
+                 For routine refreshes use: EXEC dbo.run_pipeline;
+                 To redeploy a single layer without losing state, re-run that
+                 layer's DDL and procedure scripts instead (not this script).
 ===============================================================================
 */
 
