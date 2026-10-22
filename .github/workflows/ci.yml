@@ -1,0 +1,141 @@
+# Builds the warehouse from scratch in a throwaway SQL Server 2022 container,
+# runs the pipeline twice and checks the results. A failure anywhere (a script
+# error, a failed DQ assertion or a failed check below) turns the build red.
+#
+# Free for public repositories. SQL Server Developer edition is licensed for
+# development and testing only, which is how it is used here.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:        # allows a manual run from the Actions tab
+
+permissions:
+  contents: read
+
+jobs:
+  pipeline:
+    name: Build warehouse and run pipeline
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    env:
+      # Throwaway password for a container that exists only during this run.
+      MSSQL_SA_PASSWORD: Ci_Throwaway_Passw0rd!
+      SQLCMD: /opt/mssql-tools18/bin/sqlcmd
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v6
+
+      - name: Start SQL Server 2022
+        run: |
+          docker run -d --name sqlserver \
+            -e ACCEPT_EULA=Y \
+            -e MSSQL_PID=Developer \
+            -e "MSSQL_SA_PASSWORD=$MSSQL_SA_PASSWORD" \
+            -v "$GITHUB_WORKSPACE/datasets:/var/opt/mssql/datasets:ro" \
+            mcr.microsoft.com/mssql/server:2022-latest
+
+      - name: Wait for SQL Server to accept connections
+        run: |
+          for i in $(seq 1 30); do
+            if docker exec sqlserver "$SQLCMD" -C -S localhost -U sa \
+                 -P "$MSSQL_SA_PASSWORD" -Q "SELECT 1" > /dev/null 2>&1; then
+              echo "SQL Server is ready."
+              exit 0
+            fi
+            echo "Waiting for SQL Server ($i/30)..."
+            sleep 5
+          done
+          echo "SQL Server did not start in time."
+          docker logs sqlserver | tail -50
+          exit 1
+
+      - name: Deploy scripts (same order as the README)
+        run: |
+          docker cp Scripts sqlserver:/tmp/Scripts
+          docker cp tests   sqlserver:/tmp/tests
+
+          scripts=(
+            Scripts/init_database.sql
+            Scripts/04_audit/01_ddl_audit.sql
+            Scripts/04_audit/02_audit.etl_watermark.sql
+            Scripts/01_Bronze/ddl.bronze.sql
+            Scripts/01_Bronze/proc_load_bronze.sql
+            Scripts/02_Silver/ddl_silver.sql
+            Scripts/02_Silver/proc_load_silver.sql
+            Scripts/03_Gold/ddl_gold.sql
+            tests/03_tests.run_dq_checks.sql
+            Scripts/05_Orchestration/run_pipeline.sql
+          )
+
+          # -b stops with a non-zero exit code on any SQL error; -I enables
+          # QUOTED_IDENTIFIER, which is the SSMS default.
+          for f in "${scripts[@]}"; do
+            echo "::group::$f"
+            docker exec sqlserver "$SQLCMD" -C -b -I -S localhost -U sa \
+              -P "$MSSQL_SA_PASSWORD" -i "/tmp/$f"
+            echo "::endgroup::"
+          done
+
+      - name: Run the pipeline (first run)
+        run: |
+          docker exec sqlserver "$SQLCMD" -C -b -I -S localhost \
+            -d DataWarehouse -U sa -P "$MSSQL_SA_PASSWORD" \
+            -Q "EXEC dbo.run_pipeline;"
+
+      - name: Run the pipeline again and check the results
+        run: |
+          # Run a query and return only its value, with whitespace removed.
+          q() {
+            docker exec sqlserver "$SQLCMD" -C -b -I -h -1 -W -S localhost \
+              -d DataWarehouse -U sa -P "$MSSQL_SA_PASSWORD" \
+              -Q "SET NOCOUNT ON; $1" | tr -d '[:space:]'
+          }
+          assert_eq() {
+            if [ "$2" != "$3" ]; then
+              echo "FAIL: $1 (expected $3, got $2)"; exit 1
+            fi
+            echo "OK:   $1"
+          }
+          assert_positive() {
+            if [ "$2" -le 0 ]; then
+              echo "FAIL: $1 (got $2)"; exit 1
+            fi
+            echo "OK:   $1 ($2)"
+          }
+
+          bronze_before=$(q "SELECT COUNT(*) FROM bronze.crm_sales_details;")
+
+          # Second run with unchanged source files.
+          docker exec sqlserver "$SQLCMD" -C -b -I -S localhost \
+            -d DataWarehouse -U sa -P "$MSSQL_SA_PASSWORD" \
+            -Q "EXEC dbo.run_pipeline;"
+
+          bronze_after=$(q "SELECT COUNT(*) FROM bronze.crm_sales_details;")
+
+          assert_eq "rerun with unchanged files appends no Bronze rows" \
+            "$bronze_after" "$bronze_before"
+          assert_positive "silver.crm_sales_details has rows" \
+            "$(q "SELECT COUNT(*) FROM silver.crm_sales_details;")"
+          assert_positive "gold.fact_sales has rows" \
+            "$(q "SELECT COUNT(*) FROM gold.fact_sales;")"
+          assert_eq "no FAILED entries in audit.pipeline_log" \
+            "$(q "SELECT COUNT(*) FROM audit.pipeline_log WHERE status = 'FAILED';")" 0
+          # NCHAR(195) is 'Ã', the usual sign of UTF-8 read with the wrong code page.
+          assert_eq "no garbled UTF-8 characters in customer names" \
+            "$(q "SELECT COUNT(*) FROM silver.crm_cust_info WHERE cst_firstname LIKE N'%' + NCHAR(195) + N'%' OR cst_lastname LIKE N'%' + NCHAR(195) + N'%';")" 0
+
+      - name: Show diagnostics on failure
+        if: failure()
+        run: |
+          echo "--- Last pipeline log entries ---"
+          docker exec sqlserver "$SQLCMD" -C -I -S localhost -d DataWarehouse \
+            -U sa -P "$MSSQL_SA_PASSWORD" -W \
+            -Q "SELECT TOP 15 log_id, layer_name, target_table, status, error_message FROM audit.pipeline_log ORDER BY log_id DESC;" || true
+          echo "--- SQL Server container log (tail) ---"
+          docker logs sqlserver 2>&1 | tail -40 || true

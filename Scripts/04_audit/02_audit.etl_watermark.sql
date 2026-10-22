@@ -9,7 +9,6 @@ Purpose:
     never skipped.
 
 Run order: after 04_audit/01_ddl_audit.sql (needs the 'audit' schema).
-Safe to re-run: never drops the table, so watermark state survives redeploys.
 ===============================================================================
 */
 
