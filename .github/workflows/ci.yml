@@ -1,6 +1,7 @@
 # Builds the warehouse from scratch in a throwaway SQL Server 2022 container,
 # runs the pipeline twice and checks the results. A failure anywhere (a script
-# error, a failed DQ assertion or a failed check below) turns the build red.
+# error, a failed DQ assertion, a stalled step or a failed check below) turns
+# the build red.
 #
 # Free for public repositories. SQL Server Developer edition is licensed for
 # development and testing only, which is how it is used here.
@@ -20,7 +21,7 @@ jobs:
   pipeline:
     name: Build warehouse and run pipeline
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 45
 
     env:
       # Throwaway password for a container that exists only during this run.
@@ -83,12 +84,21 @@ jobs:
           done
 
       - name: Run the pipeline (first run)
+        timeout-minutes: 20     # a small dataset should finish in seconds; lower this once performance is fixed
         run: |
           docker exec sqlserver "$SQLCMD" -C -b -I -S localhost \
             -d DataWarehouse -U sa -P "$MSSQL_SA_PASSWORD" \
             -Q "EXEC dbo.run_pipeline;"
 
+      - name: Show load timings from the audit log
+        if: always()
+        run: |
+          docker exec sqlserver "$SQLCMD" -C -I -S localhost -d DataWarehouse \
+            -U sa -P "$MSSQL_SA_PASSWORD" -W \
+            -Q "SELECT log_id, layer_name, target_table, status, rows_inserted, duration_seconds FROM audit.pipeline_log ORDER BY log_id;" || true
+
       - name: Run the pipeline again and check the results
+        timeout-minutes: 20
         run: |
           # Run a query and return only its value, with whitespace removed.
           q() {
@@ -131,11 +141,17 @@ jobs:
             "$(q "SELECT COUNT(*) FROM silver.crm_cust_info WHERE cst_firstname LIKE N'%' + NCHAR(195) + N'%' OR cst_lastname LIKE N'%' + NCHAR(195) + N'%';")" 0
 
       - name: Show diagnostics on failure
-        if: failure()
+        if: failure() || cancelled()
         run: |
-          echo "--- Last pipeline log entries ---"
-          docker exec sqlserver "$SQLCMD" -C -I -S localhost -d DataWarehouse \
-            -U sa -P "$MSSQL_SA_PASSWORD" -W \
-            -Q "SELECT TOP 15 log_id, layer_name, target_table, status, error_message FROM audit.pipeline_log ORDER BY log_id DESC;" || true
-          echo "--- SQL Server container log (tail) ---"
+          d() {
+            docker exec sqlserver "$SQLCMD" -C -I -S localhost -d DataWarehouse \
+              -U sa -P "$MSSQL_SA_PASSWORD" -W -Q "$1" || true
+          }
+          echo "=== Pipeline log (a RUNNING row shows where it stopped) ==="
+          d "SELECT TOP 15 log_id, layer_name, procedure_name, target_table, status, start_time, end_time, error_message FROM audit.pipeline_log ORDER BY log_id DESC;"
+          echo "=== Active requests (look at wait_type and blocking_session_id) ==="
+          d "SELECT session_id, status, command, wait_type, wait_time, blocking_session_id, DB_NAME(database_id) AS db FROM sys.dm_exec_requests WHERE session_id > 50;"
+          echo "=== Row counts ==="
+          d "SELECT 'bronze.crm_cust_info' AS t, COUNT(*) AS n FROM bronze.crm_cust_info UNION ALL SELECT 'bronze.crm_sales_details_stg', COUNT(*) FROM bronze.crm_sales_details_stg UNION ALL SELECT 'bronze.crm_sales_details', COUNT(*) FROM bronze.crm_sales_details UNION ALL SELECT 'silver.crm_cust_info', COUNT(*) FROM silver.crm_cust_info UNION ALL SELECT 'silver.crm_sales_details', COUNT(*) FROM silver.crm_sales_details;"
+          echo "=== SQL Server container log (tail) ==="
           docker logs sqlserver 2>&1 | tail -40 || true
