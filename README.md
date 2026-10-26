@@ -1,6 +1,6 @@
 # SQL Data Warehouse and Pipeline (SQL Server, Medallion Architecture)
 
-![CI](https://github.com/Ichessegranaten/sql-data-warehouse-project/actions/workflows/ci.yml/badge.svg)
+[![CI](https://github.com/brunoserafim-data/sql-data-warehouse-project/actions/workflows/ci.yml/badge.svg)](https://github.com/brunoserafim-data/sql-data-warehouse-project/actions/workflows/ci.yml)
 
 *A medallion data warehouse built on Microsoft SQL Server, based on
 [DataWithBaraa's SQL Data Warehouse Project](https://github.com/DataWithBaraa/sql-data-warehouse-project)
