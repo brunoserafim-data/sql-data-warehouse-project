@@ -176,7 +176,7 @@ The standalone scripts `tests/01_quality_checks_silver.sql` and `tests/02_qualit
 - Bronze sales history grows with every changed row and has no retention policy.
 - Gold surrogate keys are generated with `ROW_NUMBER()` in views and are not stable across data changes.
 - Gold is not materialised, and no analytics or dashboards are included.
-- **Performance of the DQ suite:** the loads take a few seconds, but the pipeline takes about two minutes locally and about six minutes on a GitHub-hosted runner, so a CI run takes around twelve minutes. The audit timings show that almost all of this is the DQ suite, which queries the Gold views many times and re-evaluates them each time. Materialising the Gold views once per run has been identified as the fix but is not yet applied.
+- **Performance of the DQ suite:** the loads take a few seconds, but the pipeline takes about two minutes locally and about six minutes on a GitHub-hosted runner, so a CI run takes typically 10 to 20 minutes. The audit timings show that almost all of this is the DQ suite, which queries the Gold views many times and re-evaluates them each time. Materialising the Gold views once per run has been identified as the fix but is not yet applied.
 - Outside CI, the pipeline is run manually; there is no scheduler. Paths and credentials are intended for local development only.
 
 ---
